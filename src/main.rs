@@ -1,5 +1,6 @@
 mod column;
 mod database;
+mod executor;
 mod parser;
 mod row;
 mod statement;
