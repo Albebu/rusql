@@ -1,6 +1,6 @@
-use crate::statement::{
-    Statement,
-    Token::{self},
+use crate::{
+    column::{Column, ColumnDataType},
+    statement::{Statement, Token},
 };
 
 #[derive(Debug, PartialEq)]
@@ -11,11 +11,21 @@ pub(crate) enum ParseSqlErrors {
     MissinFromStatement,
     MissingTable,
     UnexpectedStatement,
+    ExpectedTableKeyword,
+    ExpectedTableName,
+    ExpectedOpeningParen,
+    ExpectedColumnName,
+    ExpectedColumnType,
+    ExpectedCommaOrClosingParen,
 }
 
 pub(crate) fn parse_sql(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
     if tokens.is_empty() {
         return Err(ParseSqlErrors::EmptyStatement);
+    }
+
+    if tokens.first() == Some(&Token::Create) {
+        return parse_create_table(&tokens[1..]);
     }
 
     let mut tokens = tokens.iter();
@@ -48,6 +58,49 @@ pub(crate) fn parse_sql(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
     }
 
     Ok(Statement::Select { table_name })
+}
+
+fn parse_create_table(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
+    let mut tokens = tokens.iter();
+
+    if tokens.next() != Some(&Token::Table) {
+        return Err(ParseSqlErrors::ExpectedTableKeyword);
+    }
+    let table_name = match tokens.next() {
+        Some(Token::Identifier(name)) => name.clone(),
+        _ => return Err(ParseSqlErrors::ExpectedTableName),
+    };
+    if tokens.next() != Some(&Token::LeftParen) {
+        return Err(ParseSqlErrors::ExpectedOpeningParen);
+    }
+
+    let mut columns = Vec::new();
+    loop {
+        let name = match tokens.next() {
+            Some(Token::Identifier(name)) => name.clone(),
+            _ => return Err(ParseSqlErrors::ExpectedColumnName),
+        };
+        let data_type = match tokens.next() {
+            Some(Token::Text) => ColumnDataType::Text,
+            Some(Token::Number) => ColumnDataType::Number,
+            _ => return Err(ParseSqlErrors::ExpectedColumnType),
+        };
+        columns.push(Column { name, data_type });
+
+        match tokens.next() {
+            Some(Token::Comma) => {}
+            Some(Token::RightParen) => break,
+            _ => return Err(ParseSqlErrors::ExpectedCommaOrClosingParen),
+        }
+    }
+
+    match (tokens.next(), tokens.next()) {
+        (None, _) | (Some(Token::Semicolon), None) => Ok(Statement::CreateTable {
+            table_name,
+            columns,
+        }),
+        _ => Err(ParseSqlErrors::UnexpectedStatement),
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -278,5 +331,61 @@ mod tests {
             },
             result.unwrap()
         );
+    }
+
+    #[test]
+    fn parser_create_table_preserves_column_names_types_and_order() {
+        use crate::column::{Column, ColumnDataType};
+
+        let tokens = tokenize("create table Users(id NUMBER,Name TEXT,age NUMBER)").unwrap();
+        let statement = parse_sql(&tokens).unwrap();
+
+        assert_eq!(
+            statement,
+            Statement::CreateTable {
+                table_name: String::from("Users"),
+                columns: vec![
+                    Column {
+                        name: String::from("id"),
+                        data_type: ColumnDataType::Number
+                    },
+                    Column {
+                        name: String::from("Name"),
+                        data_type: ColumnDataType::Text
+                    },
+                    Column {
+                        name: String::from("age"),
+                        data_type: ColumnDataType::Number
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parser_rejects_invalid_create_table_statements() {
+        for sql in [
+            "CREATE",
+            "CREATE users (id NUMBER)",
+            "CREATE TABLE (id NUMBER)",
+            "CREATE TABLE users id NUMBER)",
+            "CREATE TABLE users ()",
+            "CREATE TABLE users (id)",
+            "CREATE TABLE users (id BOOLEAN)",
+            "CREATE TABLE users (id NUMBER,)",
+            "CREATE TABLE users (,id NUMBER)",
+            "CREATE TABLE users (id NUMBER name TEXT)",
+            "CREATE TABLE users (id NUMBER",
+            "CREATE TABLE users (id NUMBER NOT NULL)",
+            "CREATE TABLE users (id NUMBER PRIMARY KEY)",
+            "CREATE TABLE users (id NUMBER);;",
+            "CREATE TABLE users (id NUMBER); extra",
+            "CREATE TABLE users (id NUMBER); SELECT * FROM users",
+            "CREATE TABLE SELECT (id NUMBER)",
+            "CREATE TABLE users (FROM TEXT)",
+        ] {
+            let tokens = tokenize(sql).unwrap();
+            assert!(parse_sql(&tokens).is_err(), "accepted {sql}");
+        }
     }
 }

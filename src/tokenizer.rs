@@ -10,11 +10,14 @@ pub(crate) fn tokenize(query: &str) -> Result<Vec<Token>, TokenizeError> {
     let mut tokens: Vec<Token> = Vec::new();
 
     for character in query.chars() {
-        if character.is_whitespace() || character == '*' || character == ';' {
+        if character.is_whitespace() || matches!(character, '*' | ';' | '(' | ')' | ',') {
             tokenize_word(&mut word, &mut tokens)?;
             match character {
                 '*' => tokens.push(Token::Star),
                 ';' => tokens.push(Token::Semicolon),
+                '(' => tokens.push(Token::LeftParen),
+                ')' => tokens.push(Token::RightParen),
+                ',' => tokens.push(Token::Comma),
                 _ => {}
             }
         } else {
@@ -35,6 +38,14 @@ fn tokenize_word(word: &mut String, tokens: &mut Vec<Token>) -> Result<(), Token
         tokens.push(Token::Select);
     } else if word.eq_ignore_ascii_case("FROM") {
         tokens.push(Token::From);
+    } else if word.eq_ignore_ascii_case("CREATE") {
+        tokens.push(Token::Create);
+    } else if word.eq_ignore_ascii_case("TABLE") {
+        tokens.push(Token::Table);
+    } else if word.eq_ignore_ascii_case("TEXT") {
+        tokens.push(Token::Text);
+    } else if word.eq_ignore_ascii_case("NUMBER") {
+        tokens.push(Token::Number);
     } else {
         let mut characters = word.chars();
         let first = characters.next().expect("word is not empty");
@@ -198,5 +209,27 @@ mod tests {
     #[test]
     fn tokenizer_accepts_empty_input() {
         assert_eq!(tokenize(""), Ok(vec![]));
+    }
+
+    #[test]
+    fn tokenizer_recognizes_create_table_and_adjacent_punctuation() {
+        use crate::statement::Token::{Comma, Create, LeftParen, Number, RightParen, Table, Text};
+
+        assert_eq!(
+            tokenize("create table users(id number,name TEXT);").unwrap(),
+            vec![
+                Create,
+                Table,
+                Identifier(String::from("users")),
+                LeftParen,
+                Identifier(String::from("id")),
+                Number,
+                Comma,
+                Identifier(String::from("name")),
+                Text,
+                RightParen,
+                Semicolon,
+            ]
+        );
     }
 }

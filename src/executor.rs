@@ -1,25 +1,50 @@
-use crate::{
-    database::Database,
-    statement::{self, Statement},
-    table::Table,
-};
+use std::collections::HashSet;
+
+use crate::{database::Database, statement::Statement, table::Table};
 
 pub(crate) enum ExecuteError {
     MissingTable,
+    TableNameExists,
+    DuplicateColumn(String),
+    EmptyColumnList,
+}
+
+pub(crate) enum QueryResult<'db> {
+    Selected(&'db Table),
+    TableCreated,
 }
 
 pub(crate) fn execute_sql_statement<'db>(
-    database: &'db Database,
+    database: &'db mut Database,
     statement: &Statement,
-) -> Result<&'db Table, ExecuteError> {
+) -> Result<QueryResult<'db>, ExecuteError> {
     match statement {
-        Statement::Select { table_name } => {
-            match database.get_table(table_name) {
-                Some(table) => {
-                    return Ok(table);
+        Statement::Select { table_name } => database
+            .get_table(table_name)
+            .map(QueryResult::Selected)
+            .ok_or(ExecuteError::MissingTable),
+        Statement::CreateTable {
+            table_name,
+            columns,
+        } => {
+            if columns.is_empty() {
+                return Err(ExecuteError::EmptyColumnList);
+            }
+            let mut names = HashSet::new();
+            for column in columns {
+                if !names.insert(&column.name) {
+                    return Err(ExecuteError::DuplicateColumn(column.name.clone()));
                 }
-                None => return Err(ExecuteError::MissingTable),
+            }
+            let table = Table {
+                name: table_name.clone(),
+                columns: columns.clone(),
+                rows: Vec::new(),
             };
+            database
+                .create_table(table)
+                .map_err(|_| ExecuteError::TableNameExists)?;
+            Ok(QueryResult::TableCreated)
         }
     }
 }
@@ -31,7 +56,7 @@ mod tests {
     use crate::{
         column::{Column, ColumnDataType},
         database::Database,
-        executor::execute_sql_statement,
+        executor::{ExecuteError, QueryResult, execute_sql_statement},
         row::{Row, RowValue},
         statement::Statement,
         table::Table,
@@ -74,13 +99,13 @@ mod tests {
     #[test]
     fn executor_retrieves_all_data_from_table() {
         let statement = get_statement();
-        let database = get_database();
+        let mut database = get_database();
 
-        let result = execute_sql_statement(&database, &statement);
+        let result = execute_sql_statement(&mut database, &statement);
 
         let table = match result {
-            Ok(table) => table,
-            Err(_) => panic!("expected the users table"),
+            Ok(QueryResult::Selected(table)) => table,
+            _ => panic!("expected the users table"),
         };
 
         assert_eq!(table.name, "users");
@@ -100,11 +125,11 @@ mod tests {
         let mut database = get_database();
         database.get_table_mut("users").unwrap().rows.clear();
 
-        let result = execute_sql_statement(&database, &statement);
+        let result = execute_sql_statement(&mut database, &statement);
 
         let table = match result {
-            Ok(table) => table,
-            Err(_) => panic!("expected the empty users table"),
+            Ok(QueryResult::Selected(table)) => table,
+            _ => panic!("expected the empty users table"),
         };
         assert_eq!(table.name, "users");
         assert_eq!(table.columns.len(), 2);
@@ -113,13 +138,28 @@ mod tests {
 
     #[test]
     fn executor_missing_table() {
-        let database = get_database();
+        let mut database = get_database();
         let statement = Statement::Select {
             table_name: String::from("orders"),
         };
 
-        let result = execute_sql_statement(&database, &statement);
+        let result = execute_sql_statement(&mut database, &statement);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn executor_rejects_empty_column_list_without_creating_table() {
+        let mut database = Database::new("test_database");
+        let statement = Statement::CreateTable {
+            table_name: String::from("users"),
+            columns: vec![],
+        };
+
+        assert!(matches!(
+            execute_sql_statement(&mut database, &statement),
+            Err(ExecuteError::EmptyColumnList)
+        ));
+        assert!(database.get_table("users").is_none());
     }
 }
