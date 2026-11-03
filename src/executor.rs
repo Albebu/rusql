@@ -1,17 +1,24 @@
 use std::collections::HashSet;
 
-use crate::{database::Database, statement::Statement, table::Table};
+use crate::{
+    database::Database,
+    statement::Statement,
+    table::{InsertRowError, Table},
+};
 
 pub(crate) enum ExecuteError {
     MissingTable,
     TableNameExists,
     DuplicateColumn(String),
     EmptyColumnList,
+    InvalidInsertRowCount,
+    InsertRow(InsertRowError),
 }
 
 pub(crate) enum QueryResult<'db> {
     Selected(&'db Table),
     TableCreated,
+    RowInserted,
 }
 
 pub(crate) fn execute_sql_statement<'db>(
@@ -45,6 +52,18 @@ pub(crate) fn execute_sql_statement<'db>(
                 .create_table(table)
                 .map_err(|_| ExecuteError::TableNameExists)?;
             Ok(QueryResult::TableCreated)
+        }
+        Statement::InsertInto { table_name, rows } => {
+            let [row] = rows.as_slice() else {
+                return Err(ExecuteError::InvalidInsertRowCount);
+            };
+            let table = database
+                .get_table_mut(table_name)
+                .ok_or(ExecuteError::MissingTable)?;
+            table
+                .insert_row(row.clone())
+                .map_err(ExecuteError::InsertRow)?;
+            Ok(QueryResult::RowInserted)
         }
     }
 }
@@ -161,5 +180,36 @@ mod tests {
             Err(ExecuteError::EmptyColumnList)
         ));
         assert!(database.get_table("users").is_none());
+    }
+
+    #[test]
+    fn executor_rejects_zero_or_multiple_insert_rows_without_changes() {
+        let mut database = get_database();
+        for rows in [
+            vec![],
+            vec![
+                Row {
+                    values: vec![RowValue::Number(2), RowValue::Text(String::from("Ada"))],
+                },
+                Row {
+                    values: vec![RowValue::Number(3), RowValue::Text(String::from("Grace"))],
+                },
+            ],
+        ] {
+            let statement = Statement::InsertInto {
+                table_name: String::from("users"),
+                rows,
+            };
+            assert!(matches!(
+                execute_sql_statement(&mut database, &statement),
+                Err(ExecuteError::InvalidInsertRowCount)
+            ));
+            assert_eq!(
+                database.get_table("users").unwrap().rows,
+                vec![Row {
+                    values: vec![RowValue::Number(1), RowValue::Text(String::from("test"))]
+                }]
+            );
+        }
     }
 }

@@ -1,5 +1,6 @@
 use crate::{
     column::{Column, ColumnDataType},
+    row::{Row, RowValue},
     statement::{Statement, Token},
 };
 
@@ -17,6 +18,9 @@ pub(crate) enum ParseSqlErrors {
     ExpectedColumnName,
     ExpectedColumnType,
     ExpectedCommaOrClosingParen,
+    ExpectedIntoKeyword,
+    ExpectedValuesKeyword,
+    ExpectedValue,
 }
 
 pub(crate) fn parse_sql(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
@@ -24,15 +28,58 @@ pub(crate) fn parse_sql(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
         return Err(ParseSqlErrors::EmptyStatement);
     }
 
-    if tokens.first() == Some(&Token::Create) {
-        return parse_create_table(&tokens[1..]);
+    match tokens.first() {
+        Some(Token::Create) => parse_create_table(&tokens[1..]),
+        Some(Token::Select) => parse_select(&tokens[1..]),
+        Some(Token::Insert) => parse_insert(&tokens[1..]),
+        _ => Err(ParseSqlErrors::MissingSelectStatement),
     }
+}
 
+fn parse_insert(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
     let mut tokens = tokens.iter();
 
-    if tokens.next() != Some(&Token::Select) {
-        return Err(ParseSqlErrors::MissingSelectStatement);
+    if tokens.next() != Some(&Token::Into) {
+        return Err(ParseSqlErrors::ExpectedIntoKeyword);
     }
+    let table_name = match tokens.next() {
+        Some(Token::Identifier(name)) => name.clone(),
+        _ => return Err(ParseSqlErrors::ExpectedTableName),
+    };
+    if tokens.next() != Some(&Token::Values) {
+        return Err(ParseSqlErrors::ExpectedValuesKeyword);
+    }
+    if tokens.next() != Some(&Token::LeftParen) {
+        return Err(ParseSqlErrors::ExpectedOpeningParen);
+    }
+
+    let mut values = Vec::new();
+    loop {
+        let value = match tokens.next() {
+            Some(Token::TextLiteral(value)) => RowValue::Text(value.clone()),
+            Some(Token::NumberLiteral(value)) => RowValue::Number(*value),
+            _ => return Err(ParseSqlErrors::ExpectedValue),
+        };
+        values.push(value);
+
+        match tokens.next() {
+            Some(Token::Comma) => {}
+            Some(Token::RightParen) => break,
+            _ => return Err(ParseSqlErrors::ExpectedCommaOrClosingParen),
+        }
+    }
+
+    match (tokens.next(), tokens.next()) {
+        (None, _) | (Some(Token::Semicolon), None) => Ok(Statement::InsertInto {
+            table_name,
+            rows: vec![Row { values }],
+        }),
+        _ => Err(ParseSqlErrors::UnexpectedStatement),
+    }
+}
+
+fn parse_select(tokens: &[Token]) -> Result<Statement, ParseSqlErrors> {
+    let mut tokens = tokens.iter();
 
     if tokens.next() != Some(&Token::Star) {
         return Err(ParseSqlErrors::MissingStartStatement);
@@ -386,6 +433,86 @@ mod tests {
         ] {
             let tokens = tokenize(sql).unwrap();
             assert!(parse_sql(&tokens).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parser_insert_preserves_literal_values_and_order() {
+        use crate::row::{Row, RowValue};
+
+        for sql in [
+            "INSERT INTO users VALUES (1, 'O''Brien', -2, '')",
+            "insert into users values (1, 'O''Brien', -2, '');",
+        ] {
+            let tokens = tokenize(sql).unwrap();
+            assert_eq!(
+                parse_sql(&tokens),
+                Ok(Statement::InsertInto {
+                    table_name: String::from("users"),
+                    rows: vec![Row {
+                        values: vec![
+                            RowValue::Number(1),
+                            RowValue::Text(String::from("O'Brien")),
+                            RowValue::Number(-2),
+                            RowValue::Text(String::new()),
+                        ],
+                    }],
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn parser_rejects_invalid_insert_statements() {
+        for sql in [
+            "INSERT",
+            "INSERT users VALUES (1)",
+            "INSERT INTO",
+            "INSERT INTO VALUES (1)",
+            "INSERT INTO users",
+            "INSERT INTO users (1)",
+            "INSERT INTO users VALUES",
+            "INSERT INTO users VALUES ()",
+            "INSERT INTO users VALUES (Ada)",
+            "INSERT INTO users VALUES (,1)",
+            "INSERT INTO users VALUES (1,)",
+            "INSERT INTO users VALUES (1 2)",
+            "INSERT INTO users VALUES (1",
+            "INSERT INTO users VALUES (1), (2)",
+            "INSERT INTO users (id) VALUES (1)",
+            "INSERT INTO users VALUES (1);;",
+            "INSERT INTO users VALUES (1); SELECT * FROM users",
+        ] {
+            let tokens = tokenize(sql).unwrap();
+            assert!(parse_sql(&tokens).is_err(), "accepted {sql}");
+        }
+    }
+
+    #[test]
+    fn parser_reports_insert_order_errors() {
+        use crate::parser::ParseSqlErrors;
+
+        for (sql, expected) in [
+            (
+                "INSERT users VALUES (1)",
+                ParseSqlErrors::ExpectedIntoKeyword,
+            ),
+            ("INSERT INTO VALUES (1)", ParseSqlErrors::ExpectedTableName),
+            (
+                "INSERT INTO users (1)",
+                ParseSqlErrors::ExpectedValuesKeyword,
+            ),
+            (
+                "INSERT INTO users VALUES 1",
+                ParseSqlErrors::ExpectedOpeningParen,
+            ),
+            ("INSERT INTO users VALUES ()", ParseSqlErrors::ExpectedValue),
+            (
+                "INSERT INTO users VALUES (1 2)",
+                ParseSqlErrors::ExpectedCommaOrClosingParen,
+            ),
+        ] {
+            assert_eq!(parse_sql(&tokenize(sql).unwrap()), Err(expected), "{sql}");
         }
     }
 }

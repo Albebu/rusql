@@ -3,14 +3,32 @@ use crate::statement::Token;
 #[derive(Debug, PartialEq)]
 pub(crate) enum TokenizeError {
     InvalidIdentifier(String),
+    UnterminatedString,
+    IntegerOutOfRange(String),
 }
 
 pub(crate) fn tokenize(query: &str) -> Result<Vec<Token>, TokenizeError> {
     let mut word = String::new();
     let mut tokens: Vec<Token> = Vec::new();
 
-    for character in query.chars() {
-        if character.is_whitespace() || matches!(character, '*' | ';' | '(' | ')' | ',') {
+    let mut characters = query.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\'' {
+            tokenize_word(&mut word, &mut tokens)?;
+            let mut value = String::new();
+            loop {
+                match characters.next() {
+                    Some('\'') if characters.peek() == Some(&'\'') => {
+                        characters.next();
+                        value.push('\'');
+                    }
+                    Some('\'') => break,
+                    Some(character) => value.push(character),
+                    None => return Err(TokenizeError::UnterminatedString),
+                }
+            }
+            tokens.push(Token::TextLiteral(value));
+        } else if character.is_whitespace() || matches!(character, '*' | ';' | '(' | ')' | ',') {
             tokenize_word(&mut word, &mut tokens)?;
             match character {
                 '*' => tokens.push(Token::Star),
@@ -46,6 +64,20 @@ fn tokenize_word(word: &mut String, tokens: &mut Vec<Token>) -> Result<(), Token
         tokens.push(Token::Text);
     } else if word.eq_ignore_ascii_case("NUMBER") {
         tokens.push(Token::Number);
+    } else if word.eq_ignore_ascii_case("INSERT") {
+        tokens.push(Token::Insert)
+    } else if word.eq_ignore_ascii_case("INTO") {
+        tokens.push(Token::Into);
+    } else if word.eq_ignore_ascii_case("VALUES") {
+        tokens.push(Token::Values);
+    } else if {
+        let digits = word.strip_prefix('-').unwrap_or(word);
+        !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit())
+    } {
+        let number = word
+            .parse::<i64>()
+            .map_err(|_| TokenizeError::IntegerOutOfRange(word.clone()))?;
+        tokens.push(Token::NumberLiteral(number));
     } else {
         let mut characters = word.chars();
         let first = characters.next().expect("word is not empty");
@@ -231,5 +263,58 @@ mod tests {
                 Semicolon,
             ]
         );
+    }
+
+    #[test]
+    fn tokenizer_recognizes_insert_literals_and_keywords() {
+        use crate::statement::Token::{
+            Comma, Insert, Into, LeftParen, NumberLiteral, RightParen, TextLiteral, Values,
+        };
+
+        assert_eq!(
+            tokenize("iNsErT InTo users VaLuEs(-1,'O''Brien, Ada', '', 9223372036854775807, -9223372036854775808);").unwrap(),
+            vec![
+                Insert,
+                Into,
+                Identifier(String::from("users")),
+                Values,
+                LeftParen,
+                NumberLiteral(-1),
+                Comma,
+                TextLiteral(String::from("O'Brien, Ada")),
+                Comma,
+                TextLiteral(String::new()),
+                Comma,
+                NumberLiteral(i64::MAX),
+                Comma,
+                NumberLiteral(i64::MIN),
+                RightParen,
+                Semicolon,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenizer_rejects_invalid_literals() {
+        assert_eq!(
+            tokenize("'unfinished"),
+            Err(TokenizeError::UnterminatedString)
+        );
+        assert_eq!(
+            tokenize("'escaped''"),
+            Err(TokenizeError::UnterminatedString)
+        );
+        for number in ["9223372036854775808", "-9223372036854775809"] {
+            assert_eq!(
+                tokenize(number),
+                Err(TokenizeError::IntegerOutOfRange(number.to_string()))
+            );
+        }
+        for value in ["-", "+1", "1.5", "-1x"] {
+            assert_eq!(
+                tokenize(value),
+                Err(TokenizeError::InvalidIdentifier(value.to_string()))
+            );
+        }
     }
 }

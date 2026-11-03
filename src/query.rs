@@ -31,7 +31,7 @@ mod test {
         parser::ParseSqlErrors,
         query::{QueryError, run_query},
         row::{Row, RowValue},
-        table::Table,
+        table::{InsertRowError, Table},
         tokenizer::TokenizeError,
     };
 
@@ -270,5 +270,102 @@ mod test {
         assert_eq!(table.columns.len(), 64);
         assert_eq!(table.columns[63].name, "column_63");
         assert!(table.rows.is_empty());
+    }
+
+    #[test]
+    fn query_creates_inserts_and_selects_rows() {
+        let mut database = Database::new("test_database");
+        assert!(matches!(
+            run_query(&mut database, "CREATE TABLE users (id NUMBER, name TEXT)"),
+            Ok(QueryResult::TableCreated)
+        ));
+
+        assert!(matches!(
+            run_query(&mut database, "INSERT INTO users VALUES (1, 'Ada')"),
+            Ok(QueryResult::RowInserted)
+        ));
+        assert!(matches!(
+            run_query(&mut database, "INSERT INTO users VALUES (-2, 'O''Brien');"),
+            Ok(QueryResult::RowInserted)
+        ));
+
+        let table = match run_query(&mut database, "SELECT * FROM users") {
+            Ok(QueryResult::Selected(table)) => table,
+            _ => panic!("expected the users table"),
+        };
+        assert_eq!(
+            table.rows,
+            vec![
+                Row {
+                    values: vec![RowValue::Number(1), RowValue::Text(String::from("Ada"))]
+                },
+                Row {
+                    values: vec![
+                        RowValue::Number(-2),
+                        RowValue::Text(String::from("O'Brien"))
+                    ]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn query_rejects_invalid_inserts_without_changing_rows() {
+        let mut database = Database::new("test_database");
+        assert!(matches!(
+            run_query(&mut database, "CREATE TABLE users (id NUMBER, name TEXT)"),
+            Ok(QueryResult::TableCreated)
+        ));
+        assert!(matches!(
+            run_query(&mut database, "INSERT INTO users VALUES (1, 'Ada')"),
+            Ok(QueryResult::RowInserted)
+        ));
+
+        for sql in [
+            "INSERT INTO users VALUES (2)",
+            "INSERT INTO users VALUES (2, 'Grace', 3)",
+        ] {
+            assert!(matches!(
+                run_query(&mut database, sql),
+                Err(QueryError::Execute(ExecuteError::InsertRow(
+                    InsertRowError::WrongNumberOfValues
+                )))
+            ));
+        }
+        for sql in [
+            "INSERT INTO users VALUES ('two', 'Grace')",
+            "INSERT INTO users VALUES (2, 3)",
+        ] {
+            assert!(matches!(
+                run_query(&mut database, sql),
+                Err(QueryError::Execute(ExecuteError::InsertRow(
+                    InsertRowError::TypeMismatch
+                )))
+            ));
+        }
+        assert!(matches!(
+            run_query(&mut database, "INSERT INTO missing VALUES (2, 'Grace')"),
+            Err(QueryError::Execute(ExecuteError::MissingTable))
+        ));
+        assert!(matches!(
+            run_query(
+                &mut database,
+                "INSERT INTO users VALUES (2, 'Grace'), (3, 'Lin')"
+            ),
+            Err(QueryError::Parse(_))
+        ));
+        let table = database.get_table("users").unwrap();
+        assert_eq!(
+            table.rows,
+            vec![Row {
+                values: vec![RowValue::Number(1), RowValue::Text(String::from("Ada"))]
+            }]
+        );
+
+        assert!(matches!(
+            run_query(&mut database, "INSERT INTO users VALUES (2, 'Grace')"),
+            Ok(QueryResult::RowInserted)
+        ));
+        assert_eq!(database.get_table("users").unwrap().rows.len(), 2);
     }
 }

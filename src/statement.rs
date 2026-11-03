@@ -1,4 +1,4 @@
-use crate::column::Column;
+use crate::{column::Column, row::Row};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Statement {
@@ -8,6 +8,10 @@ pub(crate) enum Statement {
     CreateTable {
         table_name: String,
         columns: Vec<Column>,
+    },
+    InsertInto {
+        table_name: String,
+        rows: Vec<Row>,
     },
 }
 
@@ -25,4 +29,9 @@ pub(crate) enum Token {
     LeftParen,
     RightParen,
     Comma,
+    Insert,
+    Into,
+    Values,
+    TextLiteral(String),
+    NumberLiteral(i64),
 }
