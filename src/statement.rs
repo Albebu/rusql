@@ -1,3 +1,4 @@
+#[derive(Debug, PartialEq)]
 pub(crate) enum Statement {
     Select { table_name: String },
 }
