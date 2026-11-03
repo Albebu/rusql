@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn tokenizer_and_parser_work_together() {
-        let tokens = tokenize("SELECT * FROM users;");
+        let tokens = tokenize("SELECT * FROM users;").unwrap();
 
         let result = parse_sql(&tokens);
 
